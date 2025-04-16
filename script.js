@@ -7,88 +7,94 @@ const poseImage = document.getElementById('poseImage');
 let detector;
 let currentPoseIndex = 0;
 let standardKeypointsList = [];
-let animationId;
+let rafId;
 
 const totalPoses = 8;
 const similarityThreshold = 0.85;
 
-// 载入标准姿势 JSON
+// 载入标准姿势 JSON（假设每个 JSON 是一个对象 { keypoints: [...] } 或直接 [...])
 async function loadStandardKeypoints() {
   for (let i = 1; i <= totalPoses; i++) {
     const res = await fetch(`poses/pose${i}.json`);
-    const json = await res.json();
-    standardKeypointsList.push(json);
+    const data = await res.json();
+    const kps = Array.isArray(data)
+      ? data
+      : (data.keypoints || []);             // 处理两种格式
+    console.log(`Loaded pose${i}.json, keypoints length:`, kps.length);
+    standardKeypointsList.push(kps);
   }
 }
 
-// 绘制一组关键点
-function drawKeypoints(keypoints, color = 'red', radius = 5, alpha = 1.0) {
+// 通用的画点函数
+function drawKeypoints(kps, color, radius, alpha) {
   ctx.globalAlpha = alpha;
   ctx.fillStyle = color;
-  keypoints.forEach(kp => {
+  for (const kp of kps) {
     if (kp.score > 0.4) {
       ctx.beginPath();
       ctx.arc(kp.x, kp.y, radius, 0, 2 * Math.PI);
       ctx.fill();
     }
-  });
+  }
   ctx.globalAlpha = 1.0;
 }
 
-// 计算两组关键点的相似度
+// 计算相似度（距离越小越像）
 function compareKeypoints(a, b) {
-  let total = 0, count = 0;
-  for (let i = 0; i < a.length; i++) {
+  let sum = 0, count = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) {
     if (a[i].score > 0.4 && b[i].score > 0.4) {
       const dx = a[i].x - b[i].x;
       const dy = a[i].y - b[i].y;
-      total += Math.hypot(dx, dy);
+      sum += Math.hypot(dx, dy);
       count++;
     }
   }
-  if (count === 0) return 0;
-  const avg = total / count;
-  // 距离越小相似度越高，这里做简单反比映射
+  if (!count) return 0;
+  const avg = sum / count;
   return 1 / (1 + avg / 100);
 }
 
-// 主循环：绘制视频、玩家骨架、标准骨架并检测相似度
+// 主循环：绘制视频、标准骨架、玩家骨架，并检测相似度
 async function detect() {
   const poses = await detector.estimatePoses(video);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // 先画标准骨架（底层，半透明蓝色）
-  const target = standardKeypointsList[currentPoseIndex];
-  drawKeypoints(target, 'blue', 6, 0.5);
+  // 画标准骨架（半透明蓝）
+  const targetKps = standardKeypointsList[currentPoseIndex];
+  if (targetKps) {
+    drawKeypoints(targetKps, 'blue', 6, 0.5);
+  }
 
   if (poses.length > 0) {
-    const user = poses[0].keypoints;
-    // 再画玩家骨架（红色）
-    drawKeypoints(user, 'red', 6, 1.0);
+    const userKps = poses[0].keypoints;
+    // 画玩家骨架（红）
+    drawKeypoints(userKps, 'red', 6, 1.0);
 
     // 比对相似度
-    const sim = compareKeypoints(user, target);
+    const sim = compareKeypoints(userKps, targetKps);
+    // console.log('similarity', sim);
     if (sim > similarityThreshold) {
       currentPoseIndex++;
       if (currentPoseIndex < totalPoses) {
         poseImage.src = `poses/pose${currentPoseIndex + 1}.png`;
       } else {
-        cancelAnimationFrame(animationId);
-        alert('🎉 恭喜完成所有关卡！');
+        cancelAnimationFrame(rafId);
+        alert('🎉 全部完成！');
         return;
       }
     }
   }
 
-  animationId = requestAnimationFrame(detect);
+  rafId = requestAnimationFrame(detect);
 }
 
-// 初始化并启动游戏
+// 启动流程
 async function startGame() {
   startBtn.style.display = 'none';
 
-  // 摄像头设置
+  // 摄像头
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: 'user', width: 640, height: 480 },
     audio: false
@@ -99,7 +105,7 @@ async function startGame() {
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
 
-  // TF + MoveNet 加载
+  // TF & 模型
   await tf.setBackend('webgl');
   await tf.ready();
   detector = await poseDetection.createDetector(
@@ -111,7 +117,7 @@ async function startGame() {
   await loadStandardKeypoints();
   poseImage.src = `poses/pose1.png`;
 
-  // 进入检测循环
+  // 开始检测
   detect();
 }
 
