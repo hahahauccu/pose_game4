@@ -4,81 +4,69 @@ const ctx = canvas.getContext('2d');
 const startBtn = document.getElementById('startBtn');
 const poseImage = document.getElementById('poseImage');
 
-let detector;
+let detector, rafId;
 let currentPoseIndex = 0;
-let standardKeypointsList = [];
-let rafId;
-
 const totalPoses = 8;
 const similarityThreshold = 0.85;
+const standardKeypointsList = [];
 
-// 载入标准姿势 JSON（假设每个 JSON 是一个对象 { keypoints: [...] } 或直接 [...])
+// 载入标准姿势
 async function loadStandardKeypoints() {
   for (let i = 1; i <= totalPoses; i++) {
     const res = await fetch(`poses/pose${i}.json`);
     const data = await res.json();
-    const kps = Array.isArray(data)
-      ? data
-      : (data.keypoints || []);             // 处理两种格式
-    console.log(`Loaded pose${i}.json, keypoints length:`, kps.length);
-    standardKeypointsList.push(kps);
+    standardKeypointsList.push(data.keypoints || data);
   }
 }
 
-// 通用的画点函数
+// 绘制关键点
 function drawKeypoints(kps, color, radius, alpha) {
   ctx.globalAlpha = alpha;
   ctx.fillStyle = color;
-  for (const kp of kps) {
+  kps.forEach(kp => {
     if (kp.score > 0.4) {
       ctx.beginPath();
       ctx.arc(kp.x, kp.y, radius, 0, 2 * Math.PI);
       ctx.fill();
     }
-  }
+  });
   ctx.globalAlpha = 1.0;
 }
 
-// 计算相似度（距离越小越像）
+// 计算相似度
 function compareKeypoints(a, b) {
-  let sum = 0, count = 0;
-  for (let i = 0; i < a.length && i < b.length; i++) {
-    if (a[i].score > 0.4 && b[i].score > 0.4) {
+  let sum=0, cnt=0;
+  for (let i=0;i<a.length && i<b.length;i++) {
+    if(a[i].score>0.4 && b[i].score>0.4) {
       const dx = a[i].x - b[i].x;
       const dy = a[i].y - b[i].y;
-      sum += Math.hypot(dx, dy);
-      count++;
+      sum += Math.hypot(dx,dy);
+      cnt++;
     }
   }
-  if (!count) return 0;
-  const avg = sum / count;
-  return 1 / (1 + avg / 100);
+  if(cnt===0) return 0;
+  const avg = sum/cnt;
+  return 1/(1 + avg/100);
 }
 
-// 主循环：绘制视频、标准骨架、玩家骨架，并检测相似度
+// 主循环
 async function detect() {
-  const poses = await detector.estimatePoses(video);
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const res = await detector.estimatePoses(video);
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
 
-  // 画标准骨架（半透明蓝）
-  const targetKps = standardKeypointsList[currentPoseIndex];
-  if (targetKps) {
-    drawKeypoints(targetKps, 'blue', 6, 0.5);
-  }
+  // 画标准骨架（蓝色半透明）
+  const target = standardKeypointsList[currentPoseIndex];
+  if(target) drawKeypoints(target,'blue',6,0.5);
 
-  if (poses.length > 0) {
-    const userKps = poses[0].keypoints;
-    // 画玩家骨架（红）
-    drawKeypoints(userKps, 'red', 6, 1.0);
-
-    // 比对相似度
-    const sim = compareKeypoints(userKps, targetKps);
-    // console.log('similarity', sim);
-    if (sim > similarityThreshold) {
+  if(res.length>0) {
+    const user = res[0].keypoints;
+    drawKeypoints(user,'red',6,1.0);
+    const sim = compareKeypoints(user,target);
+    if(sim > similarityThreshold) {
       currentPoseIndex++;
-      if (currentPoseIndex < totalPoses) {
-        poseImage.src = `poses/pose${currentPoseIndex + 1}.png`;
+      if(currentPoseIndex<totalPoses) {
+        poseImage.src = `poses/pose${currentPoseIndex+1}.png`;
       } else {
         cancelAnimationFrame(rafId);
         alert('🎉 全部完成！');
@@ -86,38 +74,56 @@ async function detect() {
       }
     }
   }
-
   rafId = requestAnimationFrame(detect);
 }
 
-// 启动流程
+// 初始化游戏：尝试多后端并降分辨率
 async function startGame() {
-  startBtn.style.display = 'none';
+  startBtn.disabled = true;
 
-  // 摄像头
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: 'user', width: 640, height: 480 },
+  // 手机上降分辨率
+  const isMobile = /Mobi|Android/i.test(navigator.userAgent);
+  const constraints = {
+    video: {
+      facingMode: 'user',
+      width: isMobile ? { ideal: 320 } : { ideal: 640 },
+      height: isMobile ? { ideal: 240 } : { ideal: 480 }
+    },
     audio: false
-  });
+  };
+  const stream = await navigator.mediaDevices.getUserMedia(constraints);
   video.srcObject = stream;
   await video.play();
 
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
 
-  // TF & 模型
-  await tf.setBackend('webgl');
-  await tf.ready();
+  // 先尝试 WebGL，再回退到 WASM，最后 CPU
+  let chosenBackend = null;
+  try {
+    await tf.setBackend('webgl'); await tf.ready();
+    chosenBackend = 'webgl';
+  } catch(e1) {
+    console.warn('WebGL 不可用，尝试 WASM', e1);
+    try {
+      await tf.setBackend('wasm'); await tf.ready();
+      chosenBackend = 'wasm';
+    } catch(e2) {
+      console.warn('WASM 不可用，使用 CPU', e2);
+      await tf.setBackend('cpu'); await tf.ready();
+      chosenBackend = 'cpu';
+    }
+  }
+  console.log('使用后端：', chosenBackend);
+
   detector = await poseDetection.createDetector(
     poseDetection.SupportedModels.MoveNet,
     { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
   );
 
-  // 载入标准姿势并显示第一张
   await loadStandardKeypoints();
   poseImage.src = `poses/pose1.png`;
 
-  // 开始检测
   detect();
 }
 
