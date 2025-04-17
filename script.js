@@ -8,18 +8,46 @@ let detector, rafId;
 let currentPoseIndex = 0;
 const totalPoses = 8;
 const similarityThreshold = 0.85;
-const standardKeypointsList = [];
+let standardKeypointsList = [];
+let poseOrder = [];
 
-// 载入标准姿势
+// 隨機打亂 1~8
+function shufflePoseOrder() {
+  poseOrder = Array.from({ length: totalPoses }, (_, i) => i + 1);
+  for (let i = poseOrder.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [poseOrder[i], poseOrder[j]] = [poseOrder[j], poseOrder[i]];
+  }
+  console.log("本次順序：", poseOrder);
+}
+
+// 嘗試載入 png 或 PNG
+function resolvePoseImageName(base) {
+  const png = `poses/${base}.png`;
+  const PNG = `poses/${base}.PNG`;
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(png);
+    img.onerror = () => resolve(PNG);
+    img.src = png;
+  });
+}
+
+// 載入所有 pose JSON 和配圖
 async function loadStandardKeypoints() {
-  for (let i = 1; i <= totalPoses; i++) {
+  for (const i of poseOrder) {
     const res = await fetch(`poses/pose${i}.json`);
-    const data = await res.json();
-    standardKeypointsList.push(data.keypoints || data);
+    const json = await res.json();
+    const keypoints = json.keypoints || json;
+    standardKeypointsList.push({
+      id: i,
+      keypoints,
+      imagePath: await resolvePoseImageName(`pose${i}`)
+    });
   }
 }
 
-// 绘制关键点
+// 畫骨架
 function drawKeypoints(kps, color, radius, alpha) {
   ctx.globalAlpha = alpha;
   ctx.fillStyle = color;
@@ -33,40 +61,39 @@ function drawKeypoints(kps, color, radius, alpha) {
   ctx.globalAlpha = 1.0;
 }
 
-// 计算相似度
+// 計算相似度
 function compareKeypoints(a, b) {
-  let sum=0, cnt=0;
-  for (let i=0;i<a.length && i<b.length;i++) {
-    if(a[i].score>0.4 && b[i].score>0.4) {
+  let sum = 0, count = 0;
+  for (let i = 0; i < a.length && i < b.length; i++) {
+    if (a[i].score > 0.4 && b[i].score > 0.4) {
       const dx = a[i].x - b[i].x;
       const dy = a[i].y - b[i].y;
-      sum += Math.hypot(dx,dy);
-      cnt++;
+      sum += Math.hypot(dx, dy);
+      count++;
     }
   }
-  if(cnt===0) return 0;
-  const avg = sum/cnt;
-  return 1/(1 + avg/100);
+  if (!count) return 0;
+  return 1 / (1 + (sum / count) / 100);
 }
 
-// 主循环
+// 主偵測流程
 async function detect() {
-  const res = await detector.estimatePoses(video);
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  const result = await detector.estimatePoses(video);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-  // 画标准骨架（蓝色半透明）
-  const target = standardKeypointsList[currentPoseIndex];
-  if(target) drawKeypoints(target,'blue',6,0.5);
+  const currentPose = standardKeypointsList[currentPoseIndex];
+  if (currentPose) drawKeypoints(currentPose.keypoints, 'blue', 6, 0.5);
 
-  if(res.length>0) {
-    const user = res[0].keypoints;
-    drawKeypoints(user,'red',6,1.0);
-    const sim = compareKeypoints(user,target);
-    if(sim > similarityThreshold) {
+  if (result.length > 0) {
+    const user = result[0].keypoints;
+    drawKeypoints(user, 'red', 6, 1.0);
+
+    const sim = compareKeypoints(user, currentPose.keypoints);
+    if (sim > similarityThreshold) {
       currentPoseIndex++;
-      if(currentPoseIndex<totalPoses) {
-        poseImage.src = `poses/pose${currentPoseIndex+1}.png`;
+      if (currentPoseIndex < totalPoses) {
+        poseImage.src = standardKeypointsList[currentPoseIndex].imagePath;
       } else {
         cancelAnimationFrame(rafId);
         alert('🎉 全部完成！');
@@ -74,57 +101,49 @@ async function detect() {
       }
     }
   }
+
   rafId = requestAnimationFrame(detect);
 }
 
-// 初始化游戏：尝试多后端并降分辨率
+// 啟動流程
 async function startGame() {
   startBtn.disabled = true;
 
-  // 手机上降分辨率
+  // 視訊
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
-  const constraints = {
+  const stream = await navigator.mediaDevices.getUserMedia({
     video: {
       facingMode: 'user',
       width: isMobile ? { ideal: 320 } : { ideal: 640 },
       height: isMobile ? { ideal: 240 } : { ideal: 480 }
     },
     audio: false
-  };
-  const stream = await navigator.mediaDevices.getUserMedia(constraints);
+  });
   video.srcObject = stream;
   await video.play();
-
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
 
-  // 先尝试 WebGL，再回退到 WASM，最后 CPU
-  let chosenBackend = null;
+  // 後端選擇
   try {
     await tf.setBackend('webgl'); await tf.ready();
-    chosenBackend = 'webgl';
-  } catch(e1) {
-    console.warn('WebGL 不可用，尝试 WASM', e1);
+  } catch {
     try {
       await tf.setBackend('wasm'); await tf.ready();
-      chosenBackend = 'wasm';
-    } catch(e2) {
-      console.warn('WASM 不可用，使用 CPU', e2);
+    } catch {
       await tf.setBackend('cpu'); await tf.ready();
-      chosenBackend = 'cpu';
     }
   }
-  console.log('使用后端：', chosenBackend);
 
   detector = await poseDetection.createDetector(
     poseDetection.SupportedModels.MoveNet,
     { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
   );
 
-  await loadStandardKeypoints();
-  poseImage.src = `poses/pose1.png`;
-
+  shufflePoseOrder();               // 隨機順序
+  await loadStandardKeypoints();    // 載入所有動作
+  poseImage.src = standardKeypointsList[0].imagePath;
   detect();
 }
 
-startBtn.addEventListener('click', startGame);
+startBtn.addEventListener("click", startGame);
