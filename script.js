@@ -101,7 +101,7 @@ async function detect() {
 
 async function startGame() {
   startBtn.disabled = true;
-  startBtn.style.display = 'none'; // ✅ 按鈕會消失
+  startBtn.style.display = 'none';
 
   const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -114,8 +114,11 @@ async function startGame() {
   });
   video.srcObject = stream;
   await video.play();
+
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
+  canvas.style.width = `${video.videoWidth}px`;
+  canvas.style.height = `${video.videoHeight}px`;
 
   try {
     await tf.setBackend('webgl'); await tf.ready();
