@@ -110,19 +110,22 @@ async function startGame() {
   startBtn.disabled = true;
   startBtn.style.display = 'none';
 
-  const isMobile = /Mobi|Android/i.test(navigator.userAgent);
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
-      facingMode: 'user',
-      width: isMobile ? { ideal: 320 } : { ideal: 640 },
-      height: isMobile ? { ideal: 240 } : { ideal: 480 }
+      facingMode: { exact: 'environment' }, // ✅ 使用主鏡頭
+      width: { ideal: 640 },
+      height: { ideal: 480 }
     },
     audio: false
   });
   video.srcObject = stream;
   await video.play();
+
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
+
+  // ✅ 鏡像翻轉處理
+  ctx.setTransform(-1, 0, 0, 1, canvas.width, 0);
 
   try {
     await tf.setBackend('webgl'); await tf.ready();
@@ -147,7 +150,7 @@ async function startGame() {
 
 startBtn.addEventListener("click", startGame);
 
-// ✅ 新功能：點一下畫面即可跳過這個動作
+// ✅ 點一下畫面也能跳下一動作
 document.body.addEventListener('click', () => {
   if (!standardKeypointsList.length) return;
 
